@@ -8,6 +8,7 @@ import Button from '../../components/Button';
 import FaveStar from '../../components/FaveStar';
 import UndoRedoKeylisteners from './UndoRedoKeylisteners';
 import V2PreviewModal from '../deprecated/V2PreviewModal';
+import DisplayInfoButton from '../../components/DisplayInfoButton';
 
 import { chartPropShape } from '../util/propShapes';
 import { t } from '../../locales';
@@ -267,6 +268,15 @@ class Header extends React.PureComponent {
                 >
                   {t('Edit to persist Dashboard v2')}
                 </Button>
+              )}
+
+            {!editMode &&
+              !isV2Preview &&
+              !hasUnsavedChanges && (
+                <DisplayInfoButton
+                  type='dashboard'
+                  identifier={this.props.dashboardInfo.slug}
+                />
               )}
 
             {!editMode &&

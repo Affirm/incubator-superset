@@ -13,11 +13,15 @@ import time
 import traceback
 from urllib import parse
 
+import bleach
 from flask import (
     flash, g, Markup, redirect, render_template, request, Response, url_for,
 )
-from flask_appbuilder import expose, SimpleFormView
+from flask_appbuilder import expose, SimpleFormView, MultipleView, MasterDetailView
 from flask_appbuilder.actions import action
+from flask_appbuilder.fields import QuerySelectField
+from flask_appbuilder.fieldwidgets import Select2Widget
+from flask_appbuilder.models.sqla.filters import FilterRelationManyToManyEqual
 from flask_appbuilder.models.sqla.interface import SQLAInterface
 from flask_appbuilder.security.decorators import has_access, has_access_api
 from flask_babel import gettext as __
@@ -181,6 +185,42 @@ class DashboardFilter(SupersetFilter):
             ), Dash.id.in_(owner_ids_qry)),
         )
         return query
+
+
+class FilterRelationManyToManyEqualFunction(FilterRelationManyToManyEqual):
+    def apply(self, query, func):
+        value = func()
+        return super(FilterRelationManyToManyEqualFunction, self).apply(
+            query, value)
+
+
+def team_filter(query, model_class):
+    team_ids = [x.id for x in g.user.teams]
+    query = query.filter(
+        model_class.id.in_(
+            db.session.query(model_class.id)
+            .distinct()
+            .join(model_class.team)
+            .filter(model_class.id.in_(team_ids))))
+    return query
+
+
+def get_teams():
+    return db.session.query(models.Team).all()
+
+
+def get_categories():
+    return db.session.query(models.Category).all()
+
+
+class DashboardFilterByTeam(DashboardFilter):
+
+    """List dashboards for which users have access to at least
+    one slice and are members of the team which owns the dashboard"""
+
+    def apply(self, query, func):
+        query = super(DashboardFilterByTeam, self).apply(query, func)
+        return team_filter(query, models.Dashboard)
 
 
 class DatabaseView(SupersetModelView, DeleteMixin, YamlExportMixin):  # noqa
@@ -415,6 +455,101 @@ if config.get('ENABLE_ACCESS_REQUEST'):
         icon='fa-table')
 
 
+class TeamModelView(SupersetModelView, DeleteMixin):
+    datamodel = SQLAInterface(models.Team)
+    list_columns = ['name', 'email']
+
+    hide_columns = [
+        'slices',
+        'dashboards',
+        'created_on',
+        'changed_on',
+        'changed_by',
+        'created_by',
+    ]
+    add_exclude_columns = hide_columns
+    edit_exclude_columns = hide_columns
+    show_exclude_columns = ['slices', 'dashboards']
+    order_columns = ['created_on']
+    base_order = ('changed_on', 'desc')
+    label_columns = {
+        'members': _('Members'),
+        'created_on': _('Created On'),
+    }
+
+    def pre_add(self, team):
+        team.description = bleach.clean(team.description)
+
+    def pre_update(self, team):
+        self.pre_add(team)
+
+
+appbuilder.add_view(
+    TeamModelView,
+    'Teams',
+    label=__('Teams'),
+    category='Manage',
+    category_label=__('Manage'),
+    icon='fa-group')
+
+
+class CategoryModelView(SupersetModelView, DeleteMixin):
+    datamodel = SQLAInterface(models.Category)
+    list_columns = ['name', 'parents_str', 'priority', 'team']
+    label_columns = {
+        'created_on': _('Created On'),
+        'name': _('Name'),
+        'priority': _('Priority'),
+        'notes': _('Notes'),
+        'team': _('Team'),
+        'parent': _('Parent'),
+    }
+
+    hide_columns = [
+        'slices',
+        'dashboards',
+        'changed_by',
+        'created_by',
+        'changed_on',
+        'created_on',
+    ]
+    add_exclude_columns = hide_columns
+    edit_exclude_columns = hide_columns
+
+    add_form_extra_fields = {
+        'team': QuerySelectField(
+            label='team',
+            query_func=get_teams,
+            get_pk_func=lambda x: x.id,
+            allow_blank=not config['MANDATORY_TEAMS'],
+            widget=Select2Widget(),
+        ),
+        'parent': QuerySelectField(
+            label='parent',
+            query_func=get_categories,
+            get_pk_func=lambda x: x.id,
+            allow_blank=True,
+            widget=Select2Widget(),
+        ),
+    }
+    edit_form_extra_fields = add_form_extra_fields
+
+    def pre_add(self, item):
+        pass
+
+    def pre_update(self, item):
+        self.pre_add(item)
+
+
+appbuilder.add_view(
+    CategoryModelView,
+    'Categories',
+    label=__('Categories'),
+    category='Manage',
+    category_label=__('Manage'),
+    icon='fa-group')
+
+
 class SliceModelView(SupersetModelView, DeleteMixin):  # noqa
     datamodel = SQLAInterface(models.Slice)
 
@@ -429,13 +564,14 @@ class SliceModelView(SupersetModelView, DeleteMixin):  # noqa
     }
     search_columns = (
         'slice_name', 'description', 'viz_type', 'datasource_name', 'owners',
+        'team', 'categories',
     )
     list_columns = [
         'slice_link', 'viz_type', 'datasource_link', 'creator', 'modified']
     order_columns = ['viz_type', 'datasource_link', 'modified']
     edit_columns = [
-        'slice_name', 'description', 'viz_type', 'owners', 'dashboards',
-        'params', 'cache_timeout']
+        'slice_name', 'description', 'viz_type', 'owners', 'team',
+        'categories', 'dashboards', 'params', 'cache_timeout']
     base_order = ('changed_on', 'desc')
     description_columns = {
         'description': Markup(
@@ -461,6 +597,8 @@ class SliceModelView(SupersetModelView, DeleteMixin):  # noqa
         'description': _('Description'),
         'modified': _('Last Modified'),
         'owners': _('Owners'),
+        'team': _('Team'),
+        'categories': _('Categories'),
         'params': _('Parameters'),
         'slice_link': _('Chart'),
         'slice_name': _('Name'),
@@ -468,8 +606,20 @@ class SliceModelView(SupersetModelView, DeleteMixin):  # noqa
         'viz_type': _('Visualization Type'),
     }
 
+    add_form_extra_fields = {
+        'team': QuerySelectField(
+            label='team',
+            query_func=get_teams,
+            get_pk_func=lambda x: x.id,
+            allow_blank=not config['MANDATORY_TEAMS'],
+            widget=Select2Widget(),
+        ),
+    }
+    edit_form_extra_fields = add_form_extra_fields
+
     def pre_add(self, obj):
         utils.validate_json(obj.params)
+        obj.description = bleach.clean(obj.description)
 
     def pre_update(self, obj):
         utils.validate_json(obj.params)
@@ -494,12 +644,80 @@ class SliceModelView(SupersetModelView, DeleteMixin):  # noqa
         )
 
 
+class SliceFilterByTeam(SliceFilter):
+
+    """List slices for which users have access to at least
+    one slice and are members of the team which owns the dashboard"""
+
+    def apply(self, query, func):
+        query = super(SliceFilterByTeam, self).apply(query, func)
+        return team_filter(query, models.Slice)
+
+
+class SliceByOwnerModelView(SliceModelView):
+    base_filters = [
+        ['owners', FilterRelationManyToManyEqualFunction, lambda: g.user.id],
+    ]
+    search_columns = (
+        'slice_name', 'description', 'viz_type', 'datasource_name',
+        'team', 'categories',
+    )
+
+
+class SliceByTeamModelView(SliceModelView):
+    base_filters = [['team', SliceFilterByTeam, lambda: []]]
+    search_columns = (
+        'slice_name', 'description', 'viz_type', 'datasource_name',
+        'owners', 'categories',
+    )
+
+
+class SliceByCategoryModelView(SliceModelView):
+    base_filters = [['team', SliceFilterByTeam, lambda: []]]
+    search_columns = (
+        'slice_name', 'description', 'viz_type', 'datasource_name',
+        'owners', 'categories',
+    )
+
+    @expose('/category/<int:category_id>/')
+    def blah(self, category_id):
+        category = db.session.query(models.Category).get(category_id)
+        return 'hello'
+
+
 appbuilder.add_view(
     SliceModelView,
     'Charts',
-    label=__('Charts'),
+    label=__('All'),
     icon='fa-bar-chart',
-    category='',
+    category='Charts',
+    category_icon='')
+
+
+appbuilder.add_view(
+    SliceByOwnerModelView,
+    'Charts',
+    label=__('My own'),
+    icon='fa-bar-chart',
+    category='Charts',
+    category_icon='')
+
+
+appbuilder.add_view(
+    SliceByTeamModelView,
+    'Charts',
+    label=__('My team\'s'),
+    icon='fa-bar-chart',
+    category='Charts',
+    category_icon='')
+
+
+appbuilder.add_view(
+    SliceByCategoryModelView,
+    'Charts',
+    label=__('By Category'),
+    icon='fa-bar-chart',
+    category='Charts',
     category_icon='')
 
 
@@ -521,7 +739,8 @@ class SliceAddView(SliceModelView):  # noqa
         'id', 'slice_name', 'slice_url', 'edit_url', 'viz_type', 'params',
         'description', 'description_markeddown', 'datasource_id', 'datasource_type',
         'datasource_name_text', 'datasource_link',
-        'owners', 'modified', 'changed_on']
+        'owners', 'team', 'categories', 'modified', 'changed_on']
+    show_columns = list(set(SliceModelView.edit_columns + list_columns))
 
 
 appbuilder.add_view_no_menu(SliceAddView)
@@ -538,13 +757,20 @@ class DashboardModelView(SupersetModelView, DeleteMixin):  # noqa
     list_columns = ['dashboard_link', 'creator', 'modified']
     order_columns = ['modified']
     edit_columns = [
-        'dashboard_title', 'slug', 'owners', 'position_json', 'css',
-        'json_metadata']
+        'dashboard_title', 'slug', 'description', 'owners', 'team',
+        'categories', 'position_json', 'css', 'json_metadata']
+    show_columns = edit_columns + ['table_names']
     show_columns = edit_columns + ['table_names', 'slices']
-    search_columns = ('dashboard_title', 'slug', 'owners')
+    search_columns = ('dashboard_title', 'slug', 'owners',
+                      'team', 'categories')
     add_columns = edit_columns
     base_order = ('changed_on', 'desc')
     description_columns = {
+        'description': Markup(
+            'The content here can be displayed as information in the '
+            'dashboard view. Supports '
+            '<a href="https://daringfireball.net/projects/markdown/"">'
+            'markdown</a>'),
         'position_json': _(
             'This json object describes the positioning of the widgets in '
             'the dashboard. It is dynamically generated when adjusting '
@@ -570,12 +796,25 @@ class DashboardModelView(SupersetModelView, DeleteMixin):  # noqa
         'slices': _('Charts'),
         'owners': _('Owners'),
         'creator': _('Creator'),
+        'team': _('Team'),
+        'categories': _('Categories'),
         'modified': _('Modified'),
         'position_json': _('Position JSON'),
         'css': _('CSS'),
         'json_metadata': _('JSON Metadata'),
         'table_names': _('Underlying Tables'),
     }
+
+    add_form_extra_fields = {
+        'team': QuerySelectField(
+            label='team',
+            query_func=get_teams,
+            get_pk_func=lambda x: x.id,
+            allow_blank=not config['MANDATORY_TEAMS'],
+            widget=Select2Widget(),
+        ),
+    }
+    edit_form_extra_fields = add_form_extra_fields
 
     def pre_add(self, obj):
         obj.slug = obj.slug.strip() or None
@@ -586,6 +825,7 @@ class DashboardModelView(SupersetModelView, DeleteMixin):  # noqa
             obj.owners.append(g.user)
         utils.validate_json(obj.json_metadata)
         utils.validate_json(obj.position_json)
+        obj.description = bleach.clean(obj.description)
         owners = [o for o in obj.owners]
         for slc in obj.slices:
             slc.owners = list(set(owners) | set(slc.owners))
@@ -619,12 +859,42 @@ class DashboardModelView(SupersetModelView, DeleteMixin):  # noqa
         )
 
 
+class DashboardByOwnerModelView(DashboardModelView):
+    base_filters = [
+        ['slice', DashboardFilter, lambda: []],
+        ['owners', FilterRelationManyToManyEqualFunction, lambda: g.user.id],
+    ]
+    search_columns = ('dashboard_title', 'slug', 'team', 'categories')
+
+
+class DashboardByTeamModelView(DashboardModelView):
+    base_filters = [['team', DashboardFilterByTeam, lambda: []]]
+    search_columns = ('dashboard_title', 'slug', 'owners', 'categories')
+
+
 appbuilder.add_view(
     DashboardModelView,
     'Dashboards',
-    label=__('Dashboards'),
+    label=__('All'),
     icon='fa-dashboard',
-    category='',
+    category='Dashboards',
+    category_icon='')
+
+appbuilder.add_view(
+    DashboardByOwnerModelView,
+    'Dashboards',
+    label=__('My own'),
+    icon='fa-dashboard',
+    category='Dashboards',
+    category_icon='')
+
+
+appbuilder.add_view(
+    DashboardByTeamModelView,
+    'Dashboards',
+    label=__('My team\'s'),
+    icon='fa-dashboard',
+    category='Dashboards',
     category_icon='')
 
 
@@ -1044,6 +1314,59 @@ class Superset(BaseSupersetView):
         if request.args.get('standalone') == 'true':
             endpoint += '&standalone=true'
         return redirect(endpoint)
+
+    def _get_info(self, entity):
+        info = {}
+
+        info.update({
+            'created_by': entity.created_by.username if entity.created_by else None,
+            'changed_by': entity.changed_by.username if entity.changed_by else None,
+            'created': entity.created_on.strftime('%Y-%m-%d %H:%M:%S'),
+            'updated': entity.changed_on.strftime('%Y-%m-%d %H:%M:%S'),
+            'description': entity.description,
+            'owners': [x.username for x in entity.owners],
+            'team': {},
+            'categories': [x.name for x in entity.categories],
+        })
+
+        if entity.team:
+            info['team'].update({
+                'name': entity.team.name,
+                'email': entity.team.email,
+                'notes': entity.team.notes,
+            })
+
+        return info
+
+    @has_access
+    @expose('/info/slice/<slice_id>/')
+    def slice_info(self, slice_id):
+        slice_id = int(slice_id)
+        slice = db.session.query(models.Slice).filter_by(id=slice_id).first()
+        info = {'slice': slice_id}
+
+        if not slice:
+            return json_error_response(payload=info, status=404)
+
+        info['name'] = slice.slice_name
+        info.update(self._get_info(slice))
+        return json_success(json.dumps(info))
+
+    @has_access
+    @expose('/info/dashboard/<dashboard_slug>/')
+    def dashboard_info(self, dashboard_slug):
+        dashboard_slug = dashboard_slug.lower()
+        dashboard = db.session.query(models.Dashboard).filter_by(
+            slug=dashboard_slug).first()
+        info = {'dashboard': dashboard_slug}
+
+        if not dashboard:
+            return json_error_response(payload=info, status=404)
+
+        info = {'dashboard': dashboard.id}
+        info['name'] = dashboard.dashboard_title
+        info.update(self._get_info(dashboard))
+        return json_success(json.dumps(info))
 
     def get_query_string_response(self, viz_obj):
         query = None
@@ -1913,7 +2236,7 @@ class Superset(BaseSupersetView):
         if not user_id:
             user_id = g.user.id
         Slice = models.Slice  # noqa
-        FavStar = models.FavStar # noqa
+        FavStar = models.FavStar  # noqa
         qry = (
             db.session.query(Slice,
                              FavStar.dttm).join(

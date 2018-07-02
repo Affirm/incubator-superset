@@ -4,6 +4,7 @@ import cx from 'classnames';
 import URLShortLinkButton from '../../components/URLShortLinkButton';
 import EmbedCodeButton from './EmbedCodeButton';
 import DisplayQueryButton from './DisplayQueryButton';
+import DisplayInfoButton from '../../components/DisplayInfoButton';
 import { t } from '../../locales';
 import { exportChart, getExploreLongUrl } from '../exploreUtils';
 
@@ -55,6 +56,10 @@ export default function ExploreActionButtons({
         >
           <i className="fa fa-file-text-o" /> .csv
         </a>}
+      <DisplayInfoButton
+        type='slice'
+        identifier={latestQueryFormData.slice_id.toString()}
+      />
       <DisplayQueryButton
         queryResponse={queryResponse}
         latestQueryFormData={latestQueryFormData}

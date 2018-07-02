@@ -425,6 +425,18 @@ CAN_FALLBACK_TO_DASH_V1_EDIT_MODE = True
 PLANNED_V2_AUTO_CONVERT_DATE = None  # e.g. '2018-06-16'
 V2_FEEDBACK_URL = None  # e.g., 'https://goo.gl/forms/...'
 
+# Settings which could be useful for organizations with large number of
+# dashboards
+# Should setting owners be mandatory.
+MANDATORY_OWNERS = False
+
+# Should setting teams be mandatory
+MANDATORY_TEAMS = False
+
+# Should setting hierarchy be mandatory
+MANDATORY_SLICE_CATEGORY = False
+MANDATORY_DASHBOARD_CATEGORY = False
+
 try:
     if CONFIG_PATH_ENV_VAR in os.environ:
         # Explicitly import config module that is not in pythonpath; useful

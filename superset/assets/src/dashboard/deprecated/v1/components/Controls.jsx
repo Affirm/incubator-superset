@@ -6,6 +6,7 @@ import CssEditor from './CssEditor';
 import RefreshIntervalModal from './RefreshIntervalModal';
 import SaveModal from './SaveModal';
 import SliceAdder from './SliceAdder';
+import DisplayInfoButton from '../../../../components/DisplayInfoButton';
 import { t } from '../../../../locales';
 import InfoTooltipWithTrigger from '../../../../components/InfoTooltipWithTrigger';
 
@@ -126,6 +127,10 @@ class Controls extends React.PureComponent {
     }
     return (
       <span>
+        <DisplayInfoButton
+          type='dashboard'
+          identifier={this.props.dashboard.slug}
+        />
         <DropdownButton title="Actions" bsSize="small" id="bg-nested-dropdown" pullRight>
           <ActionMenuItem
             text={t('Force Refresh')}

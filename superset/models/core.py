@@ -26,7 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import url
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.orm import relationship, subqueryload
+from sqlalchemy.orm import backref, relationship, subqueryload
 from sqlalchemy.orm.session import make_transient
 from sqlalchemy.pool import NullPool
 from sqlalchemy.schema import UniqueConstraint
@@ -83,10 +83,84 @@ class CssTemplate(Model, AuditMixinNullable):
     css = Column(Text, default='')
 
 
+team_members = Table('team_members', metadata,
+                     Column('id', Integer, primary_key=True),
+                     Column('user_id', Integer, ForeignKey('ab_user.id')),
+                     Column('team_id', Integer, ForeignKey('teams.id')))
+
+
+class Team(Model, AuditMixinNullable, ImportMixin):
+
+    """Team information which owns various dashboards and slides"""
+    __tablename__ = 'teams'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(25), unique=True)
+    email = Column(String(80))
+    notes = Column(Text, default='')
+    members = relationship(security_manager.user_model, secondary=team_members,
+                           backref='teams')
+
+    def __repr__(self):
+        return self.name
+
+
+class Category(Model, AuditMixinNullable, ImportMixin):
+
+    """Used for hierarchical placement of slices and dashboards"""
+
+    __tablename__ = 'categories'
+    __table_args__ = (
+        UniqueConstraint('name', 'parent_id'),
+    )
+    id = Column(Integer, primary_key=True)
+    name = Column(String(25), unique=True)
+    priority = Column(Integer)
+    notes = Column(Text, default='')
+    team_id = Column(Integer, ForeignKey('teams.id'))
+    team = relationship('Team', backref='categories')
+    parent_id = Column(Integer, ForeignKey('categories.id'))
+    children = relationship(
+        'Category',
+        backref=backref('parent', remote_side=[id], uselist=False),
+        single_parent=True,
+    )
+
+    def parents(self):
+        node = self
+        names = []
+        while node.parent is not None:
+            names.insert(0, node.parent.name)
+            node = node.parent
+
+        return names
+
+    def hierarchy(self):
+        parents = self.parents()
+        parents.append(self.name)
+        return parents
+
+    def parents_str(self):
+        return ' -> '.join(self.parents())
+
+    def __repr__(self):
+        return ' -> '.join(self.hierarchy())
+
+
 slice_user = Table('slice_user', metadata,
                    Column('id', Integer, primary_key=True),
                    Column('user_id', Integer, ForeignKey('ab_user.id')),
                    Column('slice_id', Integer, ForeignKey('slices.id')))
+
+slice_team = Table('slice_team', metadata,
+                   Column('id', Integer, primary_key=True),
+                   Column('team_id', Integer, ForeignKey('teams.id')),
+                   Column('slice_id', Integer, ForeignKey('slices.id')))
+
+slice_category = Table(
+    'slice_category', metadata,
+    Column('id', Integer, primary_key=True),
+    Column('category_id', Integer, ForeignKey('categories.id')),
+    Column('slice_id', Integer, ForeignKey('slices.id')))
 
 
 class Slice(Model, AuditMixinNullable, ImportMixin):
@@ -105,7 +179,10 @@ class Slice(Model, AuditMixinNullable, ImportMixin):
     cache_timeout = Column(Integer)
     perm = Column(String(1000))
     owners = relationship(security_manager.user_model, secondary=slice_user)
-
+    team = relationship('Team', secondary=slice_team, backref='slices',
+                        uselist=False)
+    categories = relationship('Category', secondary=slice_category,
+                              backref='slices')
     export_fields = ('slice_name', 'datasource_type', 'datasource_name',
                      'viz_type', 'params', 'cache_timeout')
 
@@ -314,6 +391,20 @@ dashboard_user = Table(
     Column('dashboard_id', Integer, ForeignKey('dashboards.id')),
 )
 
+dashboard_team = Table(
+    'dashboard_team', metadata,
+    Column('id', Integer, primary_key=True),
+    Column('team_id', Integer, ForeignKey('teams.id')),
+    Column('dashboard_id', Integer, ForeignKey('dashboards.id')),
+)
+
+dashboard_category = Table(
+    'dashboard_category', metadata,
+    Column('id', Integer, primary_key=True),
+    Column('category_id', Integer, ForeignKey('categories.id')),
+    Column('dashboard_id', Integer, ForeignKey('dashboards.id')),
+)
+
 
 class Dashboard(Model, AuditMixinNullable, ImportMixin):
 
@@ -331,6 +422,10 @@ class Dashboard(Model, AuditMixinNullable, ImportMixin):
         'Slice', secondary=dashboard_slices, backref='dashboards')
     owners = relationship(security_manager.user_model, secondary=dashboard_user)
 
+    team = relationship('Team', secondary=dashboard_team,
+                        backref='dashboards', uselist=False)
+    categories = relationship('Category', secondary=dashboard_category,
+                              backref='dashboards')
     export_fields = ('dashboard_title', 'position_json', 'json_metadata',
                      'description', 'css', 'slug')
 
@@ -342,6 +437,10 @@ class Dashboard(Model, AuditMixinNullable, ImportMixin):
         # pylint: disable=no-member
         return ', '.join(
             {'{}'.format(s.datasource.full_name) for s in self.slices})
+
+    @property
+    def description_markeddown(self):
+        return utils.markdown(self.description)
 
     @property
     def url(self):
